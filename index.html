@@ -1,0 +1,721 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>NYC Food Inspections Map</title>
+
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+
+    <style>
+      #map {
+        width: 65vw;
+        height: 100vh;
+      }
+
+      #bar-chart {
+        position: fixed;
+        right: 0;
+        top: 0;
+        width: 35vw;
+        height: 100vh;
+        background: #fff;
+        z-index: 500;
+      }
+
+      .neighborhood-path {
+        fill: none;
+        stroke: #000000;
+        stroke-width: 1px;
+      }
+      .borough-path {
+        fill: none;
+        stroke: #000000;
+        stroke-width: 3px;
+      }
+
+      .inspection-point {
+        stroke: #fff;
+        stroke-width: 1px;
+        cursor: pointer;
+      }
+      .inspection-point.selected {
+        stroke: #000;
+        stroke-width: 6px;
+      }
+
+      #filters {
+        position: absolute;
+        top: 0px;
+        left: 0px;
+        z-index: 500;
+        background: #fff;
+        padding: 15px;
+        border-radius: 4px;
+        max-width: 220px;
+      }
+      #filters > div {
+        margin-bottom: 10px;
+      }
+      #filters label {
+        display: block;
+        font-size: 12px;
+        font-weight: 600;
+        margin-bottom: 4px;
+      }
+
+      #filters input[type="text"],
+      #filters select,
+      #filters input[type="number"],
+      #filters input[type="date"] {
+        width: 100%;
+        padding: 4px;
+        border: 1px solid #ccc;
+        font-size: 12px;
+        box-sizing: border-box;
+      }
+
+      #filters button {
+        width: 100%;
+        padding: 6px 12px;
+        background: #ffffff;
+        cursor: pointer;
+        font-size: 12px;
+      }
+
+      .tag-chip {
+        display: inline-block;
+        margin: 2px;
+        padding: 2px 6px;
+        background: #e0e0e0;
+        border-radius: 3px;
+        font-size: 11px;
+      }
+
+      .search-dropdown {
+        max-height: 150px;
+        overflow-y: auto;
+        display: none;
+        position: absolute;
+        background: #fff;
+        width: 100%;
+      }
+      .search-dropdown div {
+        padding: 6px;
+        cursor: pointer;
+      }
+
+      #info-popup {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        background: #fff;
+        padding: 15px;
+        display: none;
+        max-width: 50%;
+        z-index: 500;
+      }
+      #info-popup h3 {
+        margin: 0 0 10px 0;
+      }
+      #info-popup p {
+        margin: 4px 0;
+      }
+      #info-popup .close-btn {
+        position: absolute;
+        top: 5px;
+        right: 10px;
+        cursor: pointer;
+        font-size: 20px;
+        color: #000000;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="loader"></div>
+
+    <div id="filters">
+      <div>
+        <label>Cuisine</label>
+        <input type="text" id="filter-cuisine-search" placeholder="Type in a cuisine..." />
+        <div id="filter-cuisine-selected"></div>
+        <div id="filter-cuisine-dropdown" class="search-dropdown"></div>
+      </div>
+
+      <div>
+        <label>Borough</label>
+        <div id="filter-borough"></div>
+      </div>
+
+      <div>
+        <label>Neighborhood</label>
+        <input
+          type="text"
+          id="filter-neighborhood-search"
+          placeholder="Type in a neighborhood..."
+        />
+        <div id="filter-neighborhood-selected"></div>
+        <div id="filter-neighborhood-dropdown" class="search-dropdown"></div>
+      </div>
+
+      <div>
+        <label
+          >Grade
+          <select id="filter-grade">
+            <option value="">All</option>
+          </select></label
+        >
+      </div>
+
+      <div>
+        <label
+          >Min Score <input id="filter-score-min" type="number" min="0" max="100" placeholder="0"
+        /></label>
+      </div>
+
+      <div>
+        <label
+          >Max Score <input id="filter-score-max" type="number" min="0" max="100" placeholder="100"
+        /></label>
+      </div>
+
+      <div>
+        <label
+          >Critical Flag
+          <select id="filter-critical">
+            <option value="">All</option>
+          </select></label
+        >
+      </div>
+
+      <div>
+        <label>Start Date <input id="filter-date-start" type="date" /></label>
+      </div>
+
+      <div>
+        <label>End Date <input id="filter-date-end" type="date" /></label>
+      </div>
+
+      <button id="reset-btn">Reset Filters</button>
+    </div>
+
+    <div id="map"></div>
+    <div id="bar-chart"></div>
+    <div id="info-popup"></div>
+
+    <script>
+      // global state
+      let allData = [];
+      let currentData = [];
+      let neighborhoodsData = null;
+      let selectedCuisines = new Set();
+      let selectedNeighborhoods = new Set();
+
+      // ui elements
+      const filterCuisineSearch = document.getElementById("filter-cuisine-search");
+      const filterCuisineSelected = document.getElementById("filter-cuisine-selected");
+      const filterCuisineDropdown = document.getElementById("filter-cuisine-dropdown");
+      const filterNeighborhoodSearch = document.getElementById("filter-neighborhood-search");
+      const filterNeighborhoodSelected = document.getElementById("filter-neighborhood-selected");
+      const filterNeighborhoodDropdown = document.getElementById("filter-neighborhood-dropdown");
+      const filterBorough = document.getElementById("filter-borough");
+      const filterGrade = document.getElementById("filter-grade");
+      const filterScoreMin = document.getElementById("filter-score-min");
+      const filterScoreMax = document.getElementById("filter-score-max");
+      const filterCritical = document.getElementById("filter-critical");
+      const filterDateStart = document.getElementById("filter-date-start");
+      const filterDateEnd = document.getElementById("filter-date-end");
+      const resetBtn = document.getElementById("reset-btn");
+      const restaurantInfoPopup = document.getElementById("info-popup");
+      const barChart = document.getElementById("bar-chart");
+
+      const NYC_LAT = 40.7128;
+      const NYC_LNG = -74.006;
+      const ZOOM_LEVEL = 10;
+      const CIRCLE_RADIUS = 6;
+      const HIGHLIGHT_RADIUS = 4;
+
+      // map
+      const map = L.map("map", {
+        zoomControl: false,
+      }).setView([NYC_LAT, NYC_LNG], ZOOM_LEVEL); // set coords to nyc
+
+      L.svg(map).addTo(map);
+
+      const svg = d3.select("#map").select("svg");
+      const layers = {
+        neighborhoods: svg.append("g").attr("id", "neighborhoods"),
+        boroughs: svg.append("g").attr("id", "boroughs"),
+        points: svg.append("g").attr("id", "inspection-points"),
+      };
+
+      function getGradeColor(grade) {
+        const colors = {
+          A: "#069C56", // green
+          B: "#FF681E", // orange
+          C: "#B50000", // red
+          P: "#95a5a6",
+          Z: "#34495e",
+          N: "#7f8c8d",
+        };
+        return colors[grade];
+      }
+
+      function parseDate(dateStr) {
+        if (!dateStr) return null;
+        return new Date(dateStr).getTime();
+      }
+
+      // data loader and cleaner
+      function parseCsvRow(row) {
+        return {
+          name: row.DBA,
+          cuisine: row["CUISINE DESCRIPTION"],
+          borough: row.BORO,
+          neighborhood: row.NEIGHBORHOOD,
+          inspectionDate: row["INSPECTION DATE"],
+          violationCode: row["VIOLATION CODE"],
+          violationDescription: row["VIOLATION DESCRIPTION"],
+          criticalFlag: row["CRITICAL FLAG"],
+          action: row.ACTION,
+          score: parseInt(row.SCORE),
+          grade: row.GRADE,
+          lat: parseFloat(row.Latitude),
+          lng: parseFloat(row.Longitude),
+        };
+      }
+
+      function loadData() {
+        return d3.csv("res.csv", parseCsvRow).then((rows) => {
+          return rows.filter(
+            (d) => d.grade && d.grade.trim() !== "" && d.grade !== "No Grade" && d.lat && d.lng
+          );
+        });
+      }
+
+      function geoPathHelper() {
+        return d3.geoPath().projection(
+          d3.geoTransform({
+            point(x, y) {
+              const p = map.latLngToLayerPoint([y, x]);
+              this.stream.point(p.x, p.y);
+            },
+          })
+        );
+      }
+
+      function renderPathLayer(geoData, d3Group, cssClass) {
+        d3Group
+          .selectAll("path")
+          .data(geoData.features)
+          .join("path")
+          .attr("class", cssClass)
+          .attr("d", geoPathHelper());
+
+        return () => {
+          d3Group.selectAll("path").attr("d", geoPathHelper());
+        };
+      }
+
+      // main render function
+      function renderPoints(data) {
+        const circles = layers.points
+          .selectAll("circle")
+          .data(data)
+          .join("circle")
+          .attr("class", "inspection-point")
+          .attr("r", CIRCLE_RADIUS)
+          .attr("fill", (d) => getGradeColor(d.grade))
+          .style("opacity", 0.7)
+          .style("pointer-events", "all")
+          .on("click", (e, d) => {
+            e.stopImmediatePropagation();
+            highlightPoint(d);
+            restaurantInfoPopup.innerHTML = `
+              <span class="close-btn" onclick="closePopup()">×</span>
+              <h2>${d.name}</h2>
+              <p>Cuisine: ${d.cuisine}</p>
+              <p>Borough: ${d.borough}</p>
+              <p>Score: ${d.score}</p>
+              <p>Grade: <strong>${d.grade}</strong></p>
+              <p>Date: ${d.inspectionDate}</p>
+              <p>Violation: ${d.violationDescription}</p>
+            `;
+            restaurantInfoPopup.style.display = "block";
+          });
+
+        function updatePositions() {
+          circles.each(function (d) {
+            const point = map.latLngToLayerPoint([d.lat, d.lng]);
+            d3.select(this).attr("cx", point.x).attr("cy", point.y);
+          });
+        }
+
+        updatePositions();
+        map.on("zoom moveend", updatePositions);
+      }
+
+      function highlightPoint(targetData) {
+        layers.points.selectAll(".inspection-point").each(function (d) {
+          const isSelected = d === targetData;
+          d3.select(this)
+            .classed("selected", isSelected)
+            .attr("r", isSelected ? CIRCLE_RADIUS + HIGHLIGHT_RADIUS : CIRCLE_RADIUS);
+        });
+      }
+
+      // close the popup and restore the point to og size
+      function closePopup() {
+        restaurantInfoPopup.style.display = "none";
+        layers.points
+          .selectAll(".inspection-point")
+          .classed("selected", false)
+          .attr("r", CIRCLE_RADIUS);
+      }
+
+      function createGroupedData(inspections, groupNames, func) {
+        return groupNames.map((name) => {
+          const subset = inspections.filter((d) => func(d, name));
+          const counts = d3.rollup(
+            subset,
+            (v) => v.length,
+            (d) => d.grade || "No Grade"
+          );
+          return { group: name, counts };
+        });
+      }
+
+      function renderGraph(data) {
+        barChart.innerHTML = "";
+        if (!data.length) return;
+
+        const margin = { top: 100, right: 20, bottom: 100, left: 100 };
+        const width = barChart.clientWidth - margin.left - margin.right;
+        const height = barChart.clientHeight - margin.top - margin.bottom;
+
+        const svg = d3
+          .select("#bar-chart")
+          .append("svg")
+          .attr("width", width + margin.left + margin.right)
+          .attr("height", height + margin.top + margin.bottom);
+        const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+        const selBoroughs = getCheckedValues(filterBorough);
+        const selCuisines = Array.from(selectedCuisines);
+        const selNeighborhoods = Array.from(selectedNeighborhoods);
+
+        const hasMultipleBoroughs = selBoroughs.length > 1;
+        const hasMultipleNeighborhoods = selNeighborhoods.length > 1;
+        const hasMultipleCuisines = selCuisines.length > 1;
+        const hasNoOtherFilters = !selCuisines.length && !selNeighborhoods.length;
+
+        let title, groups, groupedData;
+
+        // if we are looking at boroughs
+        if (selBoroughs.length && (hasMultipleBoroughs || hasNoOtherFilters)) {
+          title = hasMultipleBoroughs
+            ? "Grade Distribution by Borough"
+            : `Distribution - ${selBoroughs[0]}`;
+          groups = selBoroughs;
+          groupedData = createGroupedData(data, groups, (d, name) => d.borough === name);
+          // if we are looking at neighborhoods
+        } else if (selNeighborhoods.length && (hasMultipleNeighborhoods || !selCuisines.length)) {
+          title = hasMultipleNeighborhoods
+            ? "Grade Distribution by Neighborhood"
+            : `Distribution - ${selNeighborhoods[0]}`;
+          groups = selNeighborhoods;
+          groupedData = createGroupedData(data, groups, (d, name) => d.neighborhood === name);
+          // if we are looking at cuisines
+        } else if (selCuisines.length) {
+          title = hasMultipleCuisines
+            ? "Grade Distribution by Cuisine"
+            : `Distribution - ${selCuisines[0]}`;
+          groups = selCuisines;
+          groupedData = createGroupedData(data, groups, (d, name) => d.cuisine === name);
+        } else {
+          title = "Grade Distribution";
+          groups = ["NYC Overall"];
+          const counts = d3.rollup(
+            data,
+            (v) => v.length,
+            (d) => d.grade || "No Grade"
+          );
+          groupedData = [{ group: "NYC Overall", counts }];
+        }
+
+        const allGrades = getUniqueValues(data.map((d) => d.grade || "No Grade"));
+        const getGradeData = (counts) =>
+          allGrades.map((grade) => ({
+            grade,
+            count: counts.get(grade) || 0,
+          }));
+
+        const x0 = d3.scaleBand().domain(groups).range([0, width]).padding(0.1);
+        const x1 = d3.scaleBand().domain(allGrades).range([0, x0.bandwidth()]).padding(0.05);
+        const maxY =
+          d3.max(groupedData, (d) => d3.max(allGrades, (k) => d.counts.get(k) || 0)) || 0;
+        const y = d3.scaleLinear().domain([0, maxY]).nice().range([height, 0]);
+        const color = d3
+          .scaleOrdinal()
+          .domain(allGrades)
+          .range(allGrades.map((g) => getGradeColor(g)));
+
+        g.append("text").attr("x", 10).attr("y", -40).style("font-size", "30px").text(title);
+
+        const groupContainer = g
+          .selectAll(".group")
+          .data(groupedData)
+          .join("g")
+          .attr("class", "group")
+          .attr("transform", (d) => `translate(${x0(d.group)},0)`);
+
+        groupContainer
+          .selectAll("rect")
+          .data((d) => getGradeData(d.counts))
+          .join("rect")
+          .attr("x", (d) => x1(d.grade))
+          .attr("y", (d) => y(d.count))
+          .attr("width", x1.bandwidth())
+          .attr("height", (d) => height - y(d.count))
+          .attr("fill", (d) => color(d.grade));
+
+        groupContainer
+          .selectAll("text.bar-label")
+          .data((d) => getGradeData(d.counts))
+          .join("text")
+          .attr("x", (d) => x1(d.grade) + x1.bandwidth() / 2)
+          .attr("y", (d) => y(d.count) - 5)
+          .attr("text-anchor", "middle")
+          .style("font-size", "25px")
+          .text((d) => d.grade);
+
+        g.append("g")
+          .attr("transform", `translate(0,${height})`)
+          .call(d3.axisBottom(x0))
+          .selectAll("text")
+          .style("font-size", "20px");
+
+        g.append("g").call(d3.axisLeft(y).ticks(10)).selectAll("text").style("font-size", "20px");
+      }
+
+      function getUniqueValues(arr) {
+        return [...new Set(arr.filter(Boolean))].sort();
+      }
+
+      function getCheckedValues(container) {
+        if (!container) return [];
+        return Array.from(container.querySelectorAll("input[type='checkbox']:checked")).map(
+          (cb) => cb.value
+        );
+      }
+
+      function applyFilters() {
+        if (!allData.length) return;
+
+        const filters = {
+          boroughs: getCheckedValues(filterBorough),
+          cuisines: Array.from(selectedCuisines),
+          neighborhoods: Array.from(selectedNeighborhoods),
+          grade: filterGrade.value,
+          critical: filterCritical.value,
+          scoreMin: filterScoreMin.value ? parseInt(filterScoreMin.value) : null,
+          scoreMax: filterScoreMax.value ? parseInt(filterScoreMax.value) : null,
+          dateStart: parseDate(filterDateStart.value),
+          dateEnd: parseDate(filterDateEnd.value),
+        };
+
+        // master filter object
+        // check if filters exist and if they do then apply them
+        // if not then retrn all points
+        currentData = allData.filter((d) => {
+          if (filters.cuisines.length && !filters.cuisines.includes(d.cuisine)) return false;
+          if (filters.boroughs.length && !filters.boroughs.includes(d.borough)) return false;
+          if (
+            filters.neighborhoods.length &&
+            (!d.neighborhood || !filters.neighborhoods.includes(d.neighborhood))
+          )
+            return false;
+          if (filters.grade && d.grade !== filters.grade) return false;
+          if (filters.critical && d.criticalFlag !== filters.critical) return false;
+          if (filters.scoreMin !== null && (d.score === null || d.score < filters.scoreMin))
+            return false;
+          if (filters.scoreMax !== null && (d.score === null || d.score > filters.scoreMax))
+            return false;
+          const inspectionDate = parseDate(d.inspectionDate);
+          if (filters.dateStart && (!inspectionDate || inspectionDate < filters.dateStart))
+            return false;
+          if (filters.dateEnd && (!inspectionDate || inspectionDate > filters.dateEnd))
+            return false;
+          return true;
+        });
+
+        renderPoints(currentData);
+        renderGraph(currentData);
+      }
+
+      // setup the search for the dropdowns
+      function setupSearch(search, selected, dropdown, options, selectedSet) {
+        // update the selected values
+        const update = () => {
+          selected.innerHTML = "";
+          selectedSet.forEach((val) => {
+            const chip = document.createElement("span");
+            chip.className = "tag-chip";
+            chip.innerHTML = `${val} <span style="cursor:pointer;font-weight:bold">×</span>`;
+            chip.querySelector("span").onclick = () => {
+              selectedSet.delete(val);
+              update();
+              applyFilters();
+            };
+            selected.appendChild(chip);
+          });
+
+          const query = search.value.toLowerCase();
+          const matches = options.filter(
+            (opt) => opt.toLowerCase().includes(query) && !selectedSet.has(opt)
+          );
+          dropdown.innerHTML = "";
+          if (matches.length) {
+            matches.forEach((opt) => {
+              const item = document.createElement("div");
+              item.textContent = opt;
+              item.onclick = () => {
+                selectedSet.add(opt);
+                search.value = "";
+                dropdown.style.display = "none";
+                update();
+                applyFilters();
+              };
+              dropdown.appendChild(item);
+            });
+          } else if (query) {
+            dropdown.innerHTML = '<div style="color:#999">No matches</div>';
+          }
+
+          const rect = search.getBoundingClientRect();
+          dropdown.style.top = rect.bottom + window.scrollY + "px";
+          dropdown.style.left = rect.left + window.scrollX + "px";
+          dropdown.style.width = rect.width + "px";
+        };
+
+        search.addEventListener("input", () => {
+          update();
+          dropdown.style.display = search.value ? "block" : "none";
+        });
+
+        search.addEventListener("focus", () => {
+          if (search.value) dropdown.style.display = "block";
+        });
+
+        document.addEventListener("click", (e) => {
+          if (
+            !search.contains(e.target) &&
+            !dropdown.contains(e.target) &&
+            !selected.contains(e.target)
+          ) {
+            dropdown.style.display = "none";
+          }
+        });
+
+        update();
+      }
+
+      function initFilterUI(data) {
+        // get unique values for the filters
+        const cuisines = getUniqueValues(data.map((d) => d.cuisine));
+        const hoods = getUniqueValues(data.map((d) => d.neighborhood));
+        const boroughs = getUniqueValues(data.map((d) => d.borough));
+        const grades = getUniqueValues(data.map((d) => d.grade));
+        const criticals = getUniqueValues(data.map((d) => d.criticalFlag));
+
+        // setup the search for the dropdowns
+        setupSearch(
+          filterCuisineSearch,
+          filterCuisineSelected,
+          filterCuisineDropdown,
+          cuisines,
+          selectedCuisines
+        );
+        setupSearch(
+          filterNeighborhoodSearch,
+          filterNeighborhoodSelected,
+          filterNeighborhoodDropdown,
+          hoods,
+          selectedNeighborhoods
+        );
+
+        boroughs.forEach((borough) => {
+          const label = document.createElement("label");
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.value = borough;
+          checkbox.addEventListener("change", applyFilters);
+          label.appendChild(checkbox);
+          label.appendChild(document.createTextNode(" " + borough));
+          filterBorough.appendChild(label);
+        });
+
+        grades.forEach((grade) => {
+          const option = document.createElement("option");
+          option.value = grade;
+          option.textContent = grade;
+          filterGrade.appendChild(option);
+        });
+
+        criticals.forEach((critical) => {
+          const option = document.createElement("option");
+          option.value = critical;
+          option.textContent = critical;
+          filterCritical.appendChild(option);
+        });
+
+        [
+          filterGrade,
+          filterCritical,
+          filterScoreMin,
+          filterScoreMax,
+          filterDateStart,
+          filterDateEnd,
+        ].forEach((el) => el.addEventListener("change", applyFilters));
+
+        resetBtn.addEventListener("click", () => {
+          selectedCuisines.clear();
+          selectedNeighborhoods.clear();
+          document.querySelectorAll("input").forEach((input) => {
+            if (input.type === "checkbox") input.checked = false;
+            else input.value = "";
+          });
+          document.querySelectorAll("select").forEach((select) => (select.value = ""));
+          filterCuisineSearch.dispatchEvent(new Event("input"));
+          filterNeighborhoodSearch.dispatchEvent(new Event("input"));
+          applyFilters();
+        });
+      }
+
+      d3.json("geo.geojson")
+        .then((neighborhoods) => {
+          neighborhoodsData = neighborhoods;
+
+          map.fitBounds(L.geoJSON(neighborhoods).getBounds(), {
+            padding: [20, 20],
+          });
+
+          map.on("zoom moveend", () => {
+            renderPathLayer(neighborhoods, layers.neighborhoods, "neighborhood-path");
+          });
+
+          return loadData();
+        })
+        .then((data) => {
+          allData = data;
+          currentData = data;
+
+          initFilterUI(data);
+          applyFilters();
+        })
+        .catch((err) => console.error("Initialization Failed:", err));
+    </script>
+  </body>
+</html>
